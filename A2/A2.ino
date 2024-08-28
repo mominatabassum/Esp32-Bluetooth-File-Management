@@ -11,7 +11,8 @@
 #define SDA_PIN 21
 #define SCL_PIN 22
 
-#define SAMPLES 10000
+#define SAMPLES 500
+#define fileCount 24
 
 struct imu_data {
   float accelX;     
@@ -24,11 +25,17 @@ struct imu_data {
 };
 
 imu_data imu;
+String data_array[500];
+File file;
+String fileList[fileCount];
 
 BluetoothSerial SerialBT;
 float radius, speed;
 bool isRecording = false;
-String filename;
+bool isChecked = false;
+String curentFileName;
+String axis;
+int count = 0;
 
 void setup() {
   Wire.begin(SDA_PIN, SCL_PIN);
@@ -41,7 +48,7 @@ void setup() {
   Wire.endTransmission();
 
   // Start Bluetooth serial
-  SerialBT.begin("IMU_device"); // Name of your Bluetooth device
+  SerialBT.begin("Final_IMU"); // Name of your Bluetooth device
   Serial.println("IMU Device is Ready to Pair");
 
   // Initialize SPIFFS
@@ -52,6 +59,10 @@ void setup() {
   SerialBT.println("SPIFFS mounted successfully");
 }
 
+unsigned long pTime = 0;
+unsigned long cTime;
+unsigned long loopTime;
+
 void loop() {
   // Taking input from Bluetooth
   if (SerialBT.available()) {
@@ -59,11 +70,15 @@ void loop() {
     input.trim();
     if (input.length() > 0) {
       int commaIndex = input.indexOf(',');
-      if (commaIndex != -1  && !isRecording) {
+      if (commaIndex != -1 && !isRecording) {
+        int secondCommaIndex = input.indexOf(',', commaIndex + 1);
         radius = input.substring(0, commaIndex).toFloat();
-        speed = input.substring(commaIndex + 1).toFloat();
-        filename = "/file_" + String(radius) + "_" + String(speed) + ".txt";
-        
+        speed = input.substring(commaIndex + 1, secondCommaIndex).toFloat();
+        curentFileName = "/file_" + String(radius) + "_" + String(speed) + ".txt";
+        if (secondCommaIndex != -1) {
+          axis = input.substring(secondCommaIndex + 1);
+          curentFileName = "/file_" + String(radius) + "" + String(speed) + "" + axis + ".txt";
+        }
         SerialBT.print("Radius: ");
         SerialBT.println(radius);
         SerialBT.print("Speed: ");
@@ -72,19 +87,31 @@ void loop() {
         if (input == "start" && !isRecording) {
           isRecording = true;
           SerialBT.print("recording started");
+          file = SPIFFS.open(curentFileName, FILE_APPEND);
+          count=0;
 
         } else if (input == "stop") {
           isRecording = false;
            SerialBT.print("recording stopped");
+           file.close();
 
         }else if(input=="list" && !isRecording){
             listFiles();
 
         } else if (input=="delete" && !isRecording) {
-          deleteFile(filename);
+          deleteFile();
           
         } else if (input=="write" && !isRecording) {
-          sendFileToSerial(filename);
+          sendFileToSerial(curentFileName);
+
+        } else if (input=="info" && !isRecording) {
+          SerialBT.print(curentFileName);
+
+        } else if (input=="transfer" && !isRecording) {
+          transferFiles();
+
+        } else if (input=="toggle") {
+          isChecked=!isChecked;
 
         }
       }
@@ -101,11 +128,38 @@ void loop() {
   imu.gyroY = readRegister16(IMU, GYRO_XOUT_H + 2);
   imu.gyroZ = readRegister16(IMU, GYRO_XOUT_H + 4);
 
+
   if (isRecording) {
-    saveToFile();
+    char buffer[100];  // Adjust the size based on your data
+    sprintf(buffer, "AX: %.2f, AY: %.2f, AZ: %.2f, GX: %.2f, GY: %.2f, GZ: %.2f\n",
+                    imu.accelX, imu.accelY, imu.accelZ,
+                    imu.gyroX, imu.gyroY, imu.gyroZ);
+    data_array[count] = String(buffer);
+        SerialBT.printf("AX: %.2f, AY: %.2f, AZ: %.2f, GX: %.2f, GY: %.2f, GZ: %.2f\n",
+              imu.accelX, imu.accelY, imu.accelZ,
+              imu.gyroX, imu.gyroY, imu.gyroZ);
+    count++;
+    if (count==SAMPLES) {
+      isRecording = false;
+      SerialBT.print("recording stopped");
+      saveToFile();
+      file.close();
+      count=0;
+    }
   }
 
-  delay(100); // Adjust delay as needed
+  if (isChecked){
+         
+             SerialBT.printf("AX: %.2f, AY: %.2f, AZ: %.2f, GX: %.2f, GY: %.2f, GZ: %.2f\n",
+             imu.accelX, imu.accelY, imu.accelZ,
+             imu.gyroX, imu.gyroY, imu.gyroZ);
+
+  }
+  cTime = millis();
+  loopTime=cTime-pTime;
+  pTime = cTime;
+  Serial.println(loopTime);
+  delay(1); // Adjust delay as needed
 }
 
 // Read MPU registers
@@ -119,41 +173,49 @@ int16_t readRegister16(int addr, int reg) {
   return value;
 }
 
-void saveToFile() { 
-  File file = SPIFFS.open(filename, FILE_APPEND);
+void saveToFile() {
   if (!file) {
     SerialBT.println("Failed to open file for writing");
-    createFile(filename, "0,0,0,0,0,0");
+    createFile(curentFileName, "0,0,0,0,0,0");
     return;
   }
-  file.printf("AccelX: %.2f, AccelY: %.2f, AccelZ: %.2f, GyroX: %.2f, GyroY: %.2f, GyroZ: %.2f\n",
-              imu.accelX, imu.accelY, imu.accelZ,
-              imu.gyroX, imu.gyroY, imu.gyroZ);
-  file.close();
+  
+  // Assuming you want to write all elements of data_array to the file
+  for (int i = 0; i < SAMPLES; i++) {
+    file.println(data_array[i]);
+  }
 }
+
 
 void listFiles() {
-        File root = SPIFFS.open("/");
-        if (!root || !root.isDirectory()) {
-          SerialBT.println("Failed to open directory");
-          return;
-        }
+    File root = SPIFFS.open("/");
+    if (!root || !root.isDirectory()) {
+        SerialBT.println("Failed to open directory");
+        return;
+    }
 
-        File file = root.openNextFile();
-        while (file) {
-          String fileName = file.name();
-          size_t fileSize = file.size();
-          file.close(); // Close file after accessing its size
+    int j = 0;
+    File file = root.openNextFile();
+    while (file) {
+        String fileName = file.name();
+        size_t fileSize = file.size();
+        file.close(); // Close file after accessing its size
 
-          SerialBT.print("Found file: ");
-          SerialBT.print(fileName);
-          SerialBT.print(" Size: ");
-          SerialBT.print(fileSize);
-          SerialBT.println(" bytes");
+        SerialBT.print("Found file: ");
+        SerialBT.print(fileName);
+        fileList[j] = fileName;
+        SerialBT.print(" Size: ");
+        SerialBT.print(fileSize);
+        SerialBT.println(" bytes");
 
-          file = root.openNextFile(); // Move to the next file
-        }
+        file = root.openNextFile(); // Move to the next file
+        j++; // Increment the file count
+    }
+
+    SerialBT.print("Total number of files: ");
+    SerialBT.println(j);
 }
+
 
 void createFile(String path, const char *message) {
   File file = SPIFFS.open(path, FILE_WRITE);
@@ -171,36 +233,50 @@ void createFile(String path, const char *message) {
   file.close(); // Close the file to save changes
 }
 
-void deleteFile(String path) {
-  if (SPIFFS.remove(path)) {
-    Serial.print("File deleted: ");
-    Serial.println(path);
+void deleteFile() {
+  if (SPIFFS.remove(curentFileName)) {
+    SerialBT.print("File deleted: ");
+    SerialBT.println(curentFileName);
   } else {
-    Serial.print("Failed to delete file: ");
-    Serial.println(path);
+    SerialBT.print("Failed to delete file: ");
+    SerialBT.println(curentFileName);
   }
 }
 
 
-void sendFileToSerial(String filename) {
-  // Initialize SPIFFS
-  if (!SPIFFS.begin()) { // Replace with LittleFS.begin() if using LittleFS
-    SerialBT.println("Failed to mount file system");
-    return;
-  }
+void sendFileToSerial(String x) {
+    file = SPIFFS.open(x, "r"); 
+    if (!file) {
+      SerialBT.println("Failed to open file:  " + x);
+      return;
+    }
 
-  File file = SPIFFS.open(filename, "r"); // Replace with LittleFS.open() if using LittleFS
-  if (!file) {
-    SerialBT.println("Failed to open file");
-    return;
-  }
-
-  SerialBT.println("Sending file...");
-  while (file.available()) {
-    Serial.write(file.read());
-  }
-  SerialBT.println("File sent");
-  file.close();
+    //SerialBT.println("Sending file..." + x);
+    Serial.println(removeLeadingSlash(x));
+    while (file.available()) {
+      Serial.write(file.read());
+    }
+    SerialBT.println("File sent");
+    Serial.println("File Sent");
+    file.close();
 }
 
 
+void transferFiles() {
+  listFiles();
+  String x;
+  for (int i = 0; i < fileCount; i++) {
+    x = fileList[i];
+    SerialBT.println("transfering file: " + x); 
+    Serial.println(x);
+    sendFileToSerial("/" + x);    
+    Serial.println("File Sent");
+  }
+}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+
+String removeLeadingSlash(String str) {
+    if (str.startsWith("/")) {
+        str = str.substring(1);
+    }
+    return str;
+}
