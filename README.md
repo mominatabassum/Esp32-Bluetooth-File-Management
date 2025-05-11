@@ -1,0 +1,1 @@
+We created this while analyzing data at various speeds and radii using one of the motors in the lab. The first value in the ex_data represents the radius at which the IMU was mounted, and the second value indicates the speed of the universal motor.
